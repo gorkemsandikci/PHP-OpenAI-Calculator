@@ -6,6 +6,11 @@ if (!isset($_GET['input']) || !preg_match('#^[0-9+\-*/().\s]+$#', $_GET['input']
 function fetchChatGPTCode() {
     $apiKey = getenv('APIKEY');
     $url = getenv('URL');
+    
+    if (!$apiKey || !$url) {
+        throw new Exception('API yapılandırması eksik');
+    }
+    
     $headers = array(
         "Authorization: Bearer {$apiKey}",
         "Content-Type: application/json"
@@ -28,11 +33,18 @@ function fetchChatGPTCode() {
     curl_setopt($curl, CURLOPT_HTTPHEADER, $headers);
     curl_setopt($curl, CURLOPT_RETURNTRANSFER, 1);
 
-    $result = json_decode(curl_exec($curl), true);
+    $result = curl_exec($curl);
+    $httpCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+    
+    if ($httpCode !== 200) {
+        throw new Exception("API hatası: HTTP $httpCode");
+    }
+    
+    $result = json_decode($result, true);
     curl_close($curl);
- 
-    if (!isset($result['choices'][0]['message']['content']) || empty(trim($result['choices'][0]['message']['content']))) {
-        die('Error: No valid code returned from ChatGPT.<br>');
+
+    if (!isset($result['choices'][0]['message']['content'])) {
+        throw new Exception('ChatGPT geçersiz yanıt döndürdü');
     }
 
     return $result['choices'][0]['message']['content'];
@@ -41,22 +53,38 @@ function fetchChatGPTCode() {
 function executeCalculate($input) {
     $attempts = 0;
     $maxAttempts = 3;
+    
     while ($attempts < $maxAttempts) {
-        $generatedCode = fetchChatGPTCode();
-        $generatedCode = trim(preg_replace('/^.*?```php\s*|\s*```.*$/s', '', $generatedCode));
-
-        if (empty($generatedCode)) {
-            return 'Error: Generated code is empty.<br>';
-        }
-
         try {
+            $generatedCode = fetchChatGPTCode();
+            $generatedCode = trim(preg_replace('/^.*?```php\s*|\s*```.*$/s', '', $generatedCode));
+
+            if (empty($generatedCode)) {
+                throw new Exception('Generated code is empty');
+            }
+
+            if (strpos($generatedCode, 'system') !== false || 
+                strpos($generatedCode, 'exec') !== false || 
+                strpos($generatedCode, 'shell') !== false) {
+                throw new Exception('Security violation detected');
+            }
+
             eval($generatedCode);
+            
+            if (!function_exists('calculate')) {
+                throw new Exception('calculate function not found');
+            }
+
             $calcResult = calculate($input);
             return htmlspecialchars($calcResult);
-        } catch (Error $e) {
+            
+        } catch (Exception $e) {
             $attempts++;
+            error_log("Calculation error: " . $e->getMessage());
+            
             if ($attempts >= $maxAttempts) {
-                return 'Error: Failed to execute calculation after multiple attempts.<br>';
+                return 'Error: Failed to execute calculation after multiple attempts. (' . 
+                       htmlspecialchars($e->getMessage()) . ')<br>';
             }
         }
     }
